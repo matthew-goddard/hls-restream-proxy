@@ -61,7 +61,7 @@ _upstream_m3u_fetched_at = 0.0
 _channel_extinf = {}
 
 HLS_PREFETCH_SEGMENTS = int(os.environ.get("HLS_PREFETCH_SEGMENTS", "3"))
-HLS_SEGMENT_CACHE_SIZE = int(os.environ.get("HLS_SEGMENT_CACHE_SIZE", "10"))
+HLS_SEGMENT_CACHE_SIZE = int(os.environ.get("HLS_SEGMENT_CACHE_SIZE", "20"))
 # How long (seconds) to serve a cached playlist before re-fetching upstream.
 # Keeps the proxy from hammering the upstream when the HLS client polls fast.
 HLS_PLAYLIST_CACHE_TTL = float(os.environ.get("HLS_PLAYLIST_CACHE_TTL", "2.0"))
@@ -139,9 +139,11 @@ def _schedule_prefetch(content: bytes, playlist_url: str, referer: str) -> None:
     for url in _extract_segment_urls(content, playlist_url):
         if queued >= HLS_PREFETCH_SEGMENTS:
             break
-        if _seg_cache_get(url) is not None:
-            queued += 1
-            continue
+        entry = _seg_cache_get(url)
+        if entry is not None:
+            if entry["state"] == "fetching":
+                queued += 1  # in-flight fetch counts toward the limit
+            continue  # "ready" or "error" — skip without consuming a slot
         placeholder = {
             "state": "fetching",
             "data": None,

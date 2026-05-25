@@ -260,7 +260,7 @@ curl -sL -A "Mozilla/5.0" "https://streaming-site.com/channel.php" \
 | `HLS_CACHE_TTL` | `3600` | Seconds to cache scraped m3u8 URLs (per channel) |
 | `HLS_DEFAULT_BANDWIDTH` | _(empty)_ | Fallback BANDWIDTH (bits/sec) advertised in the master playlist when a channel has no value set in `channels.conf`. Prevents Jellyfin's ~20 Mbps default guess. |
 | `HLS_PREFETCH_SEGMENTS` | `3` | Segments to prefetch ahead after serving a playlist. Set to `0` to disable. |
-| `HLS_SEGMENT_CACHE_SIZE` | `10` | Maximum number of segments held in memory (LRU eviction). |
+| `HLS_SEGMENT_CACHE_SIZE` | `20` | Maximum number of segments held in memory (LRU eviction). Should be at least as large as the number of segments in the upstream playlist. |
 | `HLS_PLAYLIST_CACHE_TTL` | `2.0` | Seconds to cache a playlist before re-fetching upstream. Prevents flooding the upstream when the HLS client polls fast. |
 | `M3U_OUTPUT` | `/tmp/iptv.m3u` | Output M3U file path |
 | `HLS_PROXY_URL` | `http://127.0.0.1:8089` | Proxy URL written into M3U |
