@@ -62,11 +62,18 @@ _channel_extinf = {}
 
 HLS_PREFETCH_SEGMENTS = int(os.environ.get("HLS_PREFETCH_SEGMENTS", "3"))
 HLS_SEGMENT_CACHE_SIZE = int(os.environ.get("HLS_SEGMENT_CACHE_SIZE", "10"))
+# How long (seconds) to serve a cached playlist before re-fetching upstream.
+# Keeps the proxy from hammering the upstream when the HLS client polls fast.
+HLS_PLAYLIST_CACHE_TTL = float(os.environ.get("HLS_PLAYLIST_CACHE_TTL", "2.0"))
 
 # Segment prefetch cache: url -> {"state": "fetching"|"ready"|"error",
 #   "data": bytes|None, "content_type": str, "event": threading.Event, "added_at": float}
 _seg_cache: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
 _seg_cache_lock = threading.Lock()
+
+# Playlist cache: url -> {"raw": bytes, "content_type": str, "fetched_at": float}
+_playlist_cache: dict = {}
+_playlist_cache_lock = threading.Lock()
 
 
 def _seg_cache_get(url: str):
@@ -441,9 +448,7 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
             if referer:
                 headers["Referer"] = referer
 
-            # Early cache check: serve prefetched segments without opening an
-            # upstream connection. Playlists are never stored in _seg_cache so
-            # this is a no-op for them and falls through to the fetch below.
+            # --- Segment cache: serve prefetched bytes without any upstream connection ---
             cached = _seg_cache_get(upstream_url)
             if cached is not None:
                 if cached["state"] == "fetching":
@@ -456,6 +461,20 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                     return
                 # error or timeout: fall through to live upstream fetch
 
+            # --- Playlist cache: avoid hammering upstream when client polls fast ---
+            if upstream_url.split("?")[0].endswith(".m3u8"):
+                with _playlist_cache_lock:
+                    cached_pl = _playlist_cache.get(upstream_url)
+                if cached_pl and (time.time() - cached_pl["fetched_at"]) < HLS_PLAYLIST_CACHE_TTL:
+                    raw_content = cached_pl["raw"]
+                    _schedule_prefetch(raw_content, upstream_url, referer)
+                    self._write_body(200, "application/vnd.apple.mpegurl",
+                                     self._rewrite_playlist(raw_content, upstream_url), [
+                        ("Access-Control-Allow-Origin", "*"),
+                        ("Cache-Control", "no-cache"),
+                    ])
+                    return
+
             req = urllib.request.Request(upstream_url, headers=headers)
             resp = urllib.request.urlopen(req, timeout=15)
             content_type = resp.headers.get("Content-Type", "application/octet-stream")
@@ -466,6 +485,12 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                 raw_content = resp.read()
                 resp.close()
                 if b"#EXTM3U" in raw_content:
+                    with _playlist_cache_lock:
+                        _playlist_cache[upstream_url] = {
+                            "raw": raw_content,
+                            "content_type": content_type,
+                            "fetched_at": time.time(),
+                        }
                     _schedule_prefetch(raw_content, upstream_url, referer)
                     content = self._rewrite_playlist(raw_content, upstream_url)
                     content_type = "application/vnd.apple.mpegurl"
