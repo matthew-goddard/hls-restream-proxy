@@ -259,6 +259,8 @@ curl -sL -A "Mozilla/5.0" "https://streaming-site.com/channel.php" \
 | `CHANNELS_CONF` | `./channels.conf` | Path to channel config file |
 | `HLS_CACHE_TTL` | `3600` | Seconds to cache scraped m3u8 URLs (per channel) |
 | `HLS_DEFAULT_BANDWIDTH` | _(empty)_ | Fallback BANDWIDTH (bits/sec) advertised in the master playlist when a channel has no value set in `channels.conf`. Prevents Jellyfin's ~20 Mbps default guess. |
+| `HLS_PREFETCH_SEGMENTS` | `3` | Segments to prefetch ahead after serving a playlist. Set to `0` to disable. |
+| `HLS_SEGMENT_CACHE_SIZE` | `10` | Maximum number of segments held in memory (LRU eviction). |
 | `M3U_OUTPUT` | `/tmp/iptv.m3u` | Output M3U file path |
 | `HLS_PROXY_URL` | `http://127.0.0.1:8089` | Proxy URL written into M3U |
 
@@ -281,6 +283,16 @@ Standalone scripts work with any media server and any player. No .NET dependency
 
 **Does this add latency?**
 No. The proxy is passthrough only — it forwards the exact same bytes from the upstream, no transcoding. The only added latency is the network hop through the proxy (typically <1ms on localhost).
+
+**My stream stutters or buffers frequently. Can I improve it?**
+Yes. The proxy prefetches the next few segments in the background as soon as a playlist is served, so they are already in memory when the client requests them. This is enabled by default (`HLS_PREFETCH_SEGMENTS=3`). If you still see stuttering, try increasing the prefetch count:
+
+```bash
+export HLS_PREFETCH_SEGMENTS=5
+export HLS_SEGMENT_CACHE_SIZE=15
+```
+
+Each segment is typically 1–4 MB, so `HLS_SEGMENT_CACHE_SIZE=15` uses at most ~60 MB of RAM. Set `HLS_PREFETCH_SEGMENTS=0` to disable prefetching entirely.
 
 **Do I still need to transcode in Jellyfin?**
 The proxy itself never transcodes — it only fixes headers so Jellyfin can fetch the stream. Whether Jellyfin transcodes afterwards depends on the stream and the client:
