@@ -9,6 +9,9 @@ RUN adduser -D -h /app hlsproxy
 WORKDIR /app
 COPY hls-proxy.py .
 COPY channels.conf.example .
+# Provide an empty default so the path always exists as a file.
+# A host-mounted channels.conf will override this at runtime.
+RUN touch channels.conf
 
 USER hlsproxy
 

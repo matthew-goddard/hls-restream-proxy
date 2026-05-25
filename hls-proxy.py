@@ -246,7 +246,7 @@ def _load_channels():
             if os.path.exists(p):
                 conf = p
                 break
-    if conf and os.path.exists(conf):
+    if conf and os.path.isfile(conf):
         with open(conf) as f:
             for line in f:
                 line = line.strip()

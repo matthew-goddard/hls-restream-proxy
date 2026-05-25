@@ -2,7 +2,7 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [main]
+    branches: [main, prefetch-segments]
     tags: ['v*']
   pull_request:
     branches: [main]
@@ -41,6 +41,7 @@ jobs:
             type=semver,pattern={{version}}
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=beta,enable=${{ github.ref == 'refs/heads/prefetch-segments' }}
 
       - uses: docker/build-push-action@v6
         with:
