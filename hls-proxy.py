@@ -499,7 +499,12 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                     resp.close()
 
         except Exception as e:
-            self.send_error(502, f"Upstream error: {e}")
+            if isinstance(e, (BrokenPipeError, ConnectionResetError)):
+                return
+            try:
+                self.send_error(502, f"Upstream error: {e}")
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def _handle_index(self):
         """Plain-text landing page describing available endpoints."""
@@ -648,7 +653,12 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
             ])
 
         except Exception as e:
-            self.send_error(502, f"Upstream error: {e}")
+            if isinstance(e, (BrokenPipeError, ConnectionResetError)):
+                return
+            try:
+                self.send_error(502, f"Upstream error: {e}")
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def _override_master_bandwidth(self, content: bytes, bandwidth: int) -> bytes:
         """Pin BANDWIDTH on every variant of an upstream master playlist.
