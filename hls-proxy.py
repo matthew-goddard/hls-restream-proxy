@@ -441,6 +441,21 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
             if referer:
                 headers["Referer"] = referer
 
+            # Early cache check: serve prefetched segments without opening an
+            # upstream connection. Playlists are never stored in _seg_cache so
+            # this is a no-op for them and falls through to the fetch below.
+            cached = _seg_cache_get(upstream_url)
+            if cached is not None:
+                if cached["state"] == "fetching":
+                    cached["event"].wait(timeout=15)
+                if cached["state"] == "ready":
+                    self._write_body(200, cached["content_type"], cached["data"], [
+                        ("Access-Control-Allow-Origin", "*"),
+                        ("Cache-Control", "no-cache"),
+                    ])
+                    return
+                # error or timeout: fall through to live upstream fetch
+
             req = urllib.request.Request(upstream_url, headers=headers)
             resp = urllib.request.urlopen(req, timeout=15)
             content_type = resp.headers.get("Content-Type", "application/octet-stream")
@@ -461,19 +476,6 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                     ("Cache-Control", "no-cache"),
                 ])
             else:
-                # Segments (.ts) — serve from prefetch cache if ready, otherwise
-                # stream chunk-by-chunk from upstream.
-                cached = _seg_cache_get(upstream_url)
-                if cached is not None:
-                    if cached["state"] == "fetching":
-                        cached["event"].wait(timeout=15)
-                    if cached["state"] == "ready":
-                        self._write_body(200, cached["content_type"], cached["data"], [
-                            ("Access-Control-Allow-Origin", "*"),
-                            ("Cache-Control", "no-cache"),
-                        ])
-                        return
-
                 # Cache miss or prefetch error — stream directly from upstream.
                 # Content-Length comes from upstream when known so clients
                 # don't rely on connection-close for EOF.
