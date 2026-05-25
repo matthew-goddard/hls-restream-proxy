@@ -262,6 +262,8 @@ curl -sL -A "Mozilla/5.0" "https://streaming-site.com/channel.php" \
 | `HLS_PREFETCH_SEGMENTS` | `3` | Segments to prefetch ahead after serving a playlist. Set to `0` to disable. |
 | `HLS_SEGMENT_CACHE_SIZE` | `20` | Maximum number of segments held in memory (LRU eviction). Should be at least as large as the number of segments in the upstream playlist. |
 | `HLS_PLAYLIST_CACHE_TTL` | `2.0` | Seconds to cache a playlist before re-fetching upstream. Prevents flooding the upstream when the HLS client polls fast. |
+| `HLS_FETCH_RETRIES` | `2` | Number of retry attempts on transient upstream errors (timeouts, 5xx). Set to `0` to disable retries. |
+| `HLS_FETCH_RETRY_DELAY` | `1.0` | Seconds to wait between retry attempts. |
 | `M3U_OUTPUT` | `/tmp/iptv.m3u` | Output M3U file path |
 | `HLS_PROXY_URL` | `http://127.0.0.1:8089` | Proxy URL written into M3U |
 

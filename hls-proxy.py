@@ -65,6 +65,8 @@ HLS_SEGMENT_CACHE_SIZE = int(os.environ.get("HLS_SEGMENT_CACHE_SIZE", "20"))
 # How long (seconds) to serve a cached playlist before re-fetching upstream.
 # Keeps the proxy from hammering the upstream when the HLS client polls fast.
 HLS_PLAYLIST_CACHE_TTL = float(os.environ.get("HLS_PLAYLIST_CACHE_TTL", "2.0"))
+HLS_FETCH_RETRIES = int(os.environ.get("HLS_FETCH_RETRIES", "2"))
+HLS_FETCH_RETRY_DELAY = float(os.environ.get("HLS_FETCH_RETRY_DELAY", "1.0"))
 
 # Segment prefetch cache: url -> {"state": "fetching"|"ready"|"error",
 #   "data": bytes|None, "content_type": str, "event": threading.Event, "added_at": float}
@@ -74,6 +76,26 @@ _seg_cache_lock = threading.Lock()
 # Playlist cache: url -> {"raw": bytes, "content_type": str, "fetched_at": float}
 _playlist_cache: dict = {}
 _playlist_cache_lock = threading.Lock()
+
+
+def _fetch_with_retry(url: str, headers: dict):
+    """Open upstream URL, retrying HLS_FETCH_RETRIES times on transient errors.
+
+    Returns an open urllib response object. Raises the last exception if
+    all attempts fail. Each retry is logged so operators can see it.
+    """
+    last_exc = None
+    for attempt in range(1 + HLS_FETCH_RETRIES):
+        if attempt > 0:
+            print(f"[hls-proxy] retry {attempt}/{HLS_FETCH_RETRIES} for {url}")
+            time.sleep(HLS_FETCH_RETRY_DELAY)
+        try:
+            return urllib.request.urlopen(
+                urllib.request.Request(url, headers=headers), timeout=15
+            )
+        except Exception as exc:
+            last_exc = exc
+    raise last_exc
 
 
 def _seg_cache_get(url: str):
@@ -111,13 +133,11 @@ def _prefetch_segment(url: str, referer: str) -> None:
     entry = _seg_cache_get(url)
     if entry is None:
         return
+    hdrs = {"User-Agent": UPSTREAM_UA}
+    if referer:
+        hdrs["Referer"] = referer
     try:
-        hdrs = {"User-Agent": UPSTREAM_UA}
-        if referer:
-            hdrs["Referer"] = referer
-        with urllib.request.urlopen(
-            urllib.request.Request(url, headers=hdrs), timeout=20
-        ) as resp:
+        with _fetch_with_retry(url, hdrs) as resp:
             data = resp.read()
             ct = resp.headers.get("Content-Type", "video/mp2t")
         with _seg_cache_lock:
@@ -125,7 +145,7 @@ def _prefetch_segment(url: str, referer: str) -> None:
             entry["content_type"] = ct
             entry["state"] = "ready"
     except Exception as exc:
-        print(f"[hls-proxy] prefetch error {url}: {exc}")
+        print(f"[hls-proxy] prefetch failed after {1 + HLS_FETCH_RETRIES} attempts {url}: {exc}")
         with _seg_cache_lock:
             entry["state"] = "error"
     finally:
@@ -477,8 +497,7 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                     ])
                     return
 
-            req = urllib.request.Request(upstream_url, headers=headers)
-            resp = urllib.request.urlopen(req, timeout=15)
+            resp = _fetch_with_retry(upstream_url, headers)
             content_type = resp.headers.get("Content-Type", "application/octet-stream")
             is_playlist = upstream_url.endswith(".m3u8") or "mpegurl" in content_type.lower()
 
