@@ -16,6 +16,8 @@ import urllib.parse
 import re
 import os
 import time
+import threading
+import collections
 
 
 PORT = int(os.environ.get("HLS_PROXY_PORT", "8089"))
@@ -57,6 +59,94 @@ _upstream_m3u = []
 _upstream_m3u_fetched_at = 0.0
 # Per-channel #EXTINF line built from channels.conf (slug -> extinf)
 _channel_extinf = {}
+
+HLS_PREFETCH_SEGMENTS = int(os.environ.get("HLS_PREFETCH_SEGMENTS", "3"))
+HLS_SEGMENT_CACHE_SIZE = int(os.environ.get("HLS_SEGMENT_CACHE_SIZE", "10"))
+
+# Segment prefetch cache: url -> {"state": "fetching"|"ready"|"error",
+#   "data": bytes|None, "content_type": str, "event": threading.Event, "added_at": float}
+_seg_cache: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
+_seg_cache_lock = threading.Lock()
+
+
+def _seg_cache_get(url: str):
+    with _seg_cache_lock:
+        entry = _seg_cache.get(url)
+        if entry is not None:
+            _seg_cache.move_to_end(url)
+        return entry
+
+
+def _seg_cache_put(url: str, entry: dict) -> None:
+    with _seg_cache_lock:
+        if url in _seg_cache:
+            _seg_cache.move_to_end(url)
+            _seg_cache[url] = entry
+            return
+        while len(_seg_cache) >= HLS_SEGMENT_CACHE_SIZE:
+            _seg_cache.popitem(last=False)
+        _seg_cache[url] = entry
+
+
+def _extract_segment_urls(content: bytes, playlist_url: str) -> list:
+    text = content.decode("utf-8", errors="replace")
+    base_url = playlist_url.rsplit("/", 1)[0] + "/"
+    urls = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        urls.append(line if line.startswith("http") else base_url + line)
+    return urls
+
+
+def _prefetch_segment(url: str, referer: str) -> None:
+    entry = _seg_cache_get(url)
+    if entry is None:
+        return
+    try:
+        hdrs = {"User-Agent": UPSTREAM_UA}
+        if referer:
+            hdrs["Referer"] = referer
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers=hdrs), timeout=20
+        ) as resp:
+            data = resp.read()
+            ct = resp.headers.get("Content-Type", "video/mp2t")
+        with _seg_cache_lock:
+            entry["data"] = data
+            entry["content_type"] = ct
+            entry["state"] = "ready"
+    except Exception as exc:
+        print(f"[hls-proxy] prefetch error {url}: {exc}")
+        with _seg_cache_lock:
+            entry["state"] = "error"
+    finally:
+        entry["event"].set()
+
+
+def _schedule_prefetch(content: bytes, playlist_url: str, referer: str) -> None:
+    if HLS_PREFETCH_SEGMENTS <= 0:
+        return
+    queued = 0
+    for url in _extract_segment_urls(content, playlist_url):
+        if queued >= HLS_PREFETCH_SEGMENTS:
+            break
+        if _seg_cache_get(url) is not None:
+            queued += 1
+            continue
+        placeholder = {
+            "state": "fetching",
+            "data": None,
+            "content_type": "video/mp2t",
+            "event": threading.Event(),
+            "added_at": time.time(),
+        }
+        _seg_cache_put(url, placeholder)
+        threading.Thread(
+            target=_prefetch_segment, args=(url, referer), daemon=True
+        ).start()
+        queued += 1
 
 
 def _slugify(s: str) -> str:
@@ -358,17 +448,33 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
 
             if is_playlist:
                 # Playlists are small — read fully to rewrite URLs
-                content = resp.read()
+                raw_content = resp.read()
                 resp.close()
-                if b"#EXTM3U" in content:
-                    content = self._rewrite_playlist(content, upstream_url)
+                if b"#EXTM3U" in raw_content:
+                    _schedule_prefetch(raw_content, upstream_url, referer)
+                    content = self._rewrite_playlist(raw_content, upstream_url)
                     content_type = "application/vnd.apple.mpegurl"
+                else:
+                    content = raw_content
                 self._write_body(200, content_type, content, [
                     ("Access-Control-Allow-Origin", "*"),
                     ("Cache-Control", "no-cache"),
                 ])
             else:
-                # Segments (.ts) — stream chunk-by-chunk, never buffer fully.
+                # Segments (.ts) — serve from prefetch cache if ready, otherwise
+                # stream chunk-by-chunk from upstream.
+                cached = _seg_cache_get(upstream_url)
+                if cached is not None:
+                    if cached["state"] == "fetching":
+                        cached["event"].wait(timeout=15)
+                    if cached["state"] == "ready":
+                        self._write_body(200, cached["content_type"], cached["data"], [
+                            ("Access-Control-Allow-Origin", "*"),
+                            ("Cache-Control", "no-cache"),
+                        ])
+                        return
+
+                # Cache miss or prefetch error — stream directly from upstream.
                 # Content-Length comes from upstream when known so clients
                 # don't rely on connection-close for EOF.
                 self.send_response(200)
@@ -532,6 +638,7 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                 ])
                 return
 
+            _schedule_prefetch(content, m3u8_url, referer)
             content = self._rewrite_playlist(content, m3u8_url)
             if bandwidth and is_master:
                 content = self._override_master_bandwidth(content, bandwidth)
