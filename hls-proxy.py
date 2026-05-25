@@ -178,6 +178,19 @@ def _schedule_prefetch(content: bytes, playlist_url: str, referer: str) -> None:
         queued += 1
 
 
+def _playlist_max_age(content: bytes) -> int:
+    """Return Cache-Control max-age for a playlist response.
+
+    Parses #EXT-X-TARGETDURATION from the playlist; that value is the HLS-spec
+    polling interval for live streams. Falls back to HLS_PLAYLIST_CACHE_TTL when
+    the tag is absent (master playlists, variant M3U8s without the tag).
+    """
+    m = re.search(rb"#EXT-X-TARGETDURATION:(\d+)", content)
+    if m:
+        return int(m.group(1))
+    return max(1, int(HLS_PLAYLIST_CACHE_TTL))
+
+
 def _slugify(s: str) -> str:
     """Reduce a string to a URL-safe channel slug."""
     s = re.sub(r"[^A-Za-z0-9_-]+", "-", s).strip("-").lower()
@@ -493,7 +506,7 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                     self._write_body(200, "application/vnd.apple.mpegurl",
                                      self._rewrite_playlist(raw_content, upstream_url), [
                         ("Access-Control-Allow-Origin", "*"),
-                        ("Cache-Control", "no-cache"),
+                        ("Cache-Control", f"max-age={_playlist_max_age(raw_content)}"),
                     ])
                     return
 
@@ -519,7 +532,7 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                     content = raw_content
                 self._write_body(200, content_type, content, [
                     ("Access-Control-Allow-Origin", "*"),
-                    ("Cache-Control", "no-cache"),
+                    ("Cache-Control", f"max-age={_playlist_max_age(raw_content)}"),
                 ])
             else:
                 # Cache miss or prefetch error — stream directly from upstream.
@@ -687,7 +700,7 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                 ).encode("utf-8")
                 self._write_body(200, "application/vnd.apple.mpegurl", master, [
                     ("Access-Control-Allow-Origin", "*"),
-                    ("Cache-Control", "no-cache"),
+                    ("Cache-Control", "max-age=30"),
                 ])
                 return
 
@@ -697,7 +710,7 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
                 content = self._override_master_bandwidth(content, bandwidth)
             self._write_body(200, "application/vnd.apple.mpegurl", content, [
                 ("Access-Control-Allow-Origin", "*"),
-                ("Cache-Control", "no-cache"),
+                ("Cache-Control", f"max-age={_playlist_max_age(content)}"),
             ])
 
         except Exception as e:
