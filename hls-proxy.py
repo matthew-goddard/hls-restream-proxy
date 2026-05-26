@@ -653,11 +653,7 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
 
         try:
             referer = (embed_host + "/") if embed_host else UPSTREAM_REFERER
-            req = urllib.request.Request(m3u8_url, headers={
-                "User-Agent": UPSTREAM_UA,
-                "Referer": referer,
-            })
-            resp = urllib.request.urlopen(req, timeout=15)
+            resp = _fetch_with_retry(m3u8_url, {"User-Agent": UPSTREAM_UA, "Referer": referer})
             upstream_ct = resp.headers.get("Content-Type", "") or ""
             path = m3u8_url.split("?", 1)[0].rstrip("/")
             is_hls = "mpegurl" in upstream_ct.lower() or path.endswith(".m3u8")
@@ -790,7 +786,7 @@ class HLSProxyHandler(http.server.BaseHTTPRequestHandler):
 def main():
     # Preload channels (including upstream M3U) so /playlist.m3u works on first request.
     _load_channels()
-    server = http.server.HTTPServer((BIND_ADDR, PORT), HLSProxyHandler)
+    server = http.server.ThreadingHTTPServer((BIND_ADDR, PORT), HLSProxyHandler)
     print(f"[hls-proxy] Listening on {BIND_ADDR}:{PORT}")
     if ALLOWED_IPS:
         print(f"[hls-proxy] Allowed IPs: {', '.join(ALLOWED_IPS)}")
